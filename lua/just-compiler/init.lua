@@ -99,6 +99,30 @@ local errorformat = table.concat({
   "%-G%.%#",
 }, ",")
 
+--- Resolve relative file paths in the quickfix list to absolute paths.
+-- cwd is the directory from which the build was run (captured before make starts).
+local function resolve_qf_paths(cwd)
+  local items = vim.fn.getqflist()
+  local changed = false
+
+  for i, entry in ipairs(items) do
+    if entry.bufnr and entry.bufnr > 0 then
+      local name = vim.api.nvim_buf_get_name(entry.bufnr)
+      if name ~= "" and not vim.startswith(name, "/") then
+        local abs = vim.fn.fnamemodify(cwd .. "/" .. name, ":p")
+        if vim.fn.filereadable(abs) == 1 then
+          items[i].bufnr = vim.fn.bufadd(abs)
+          changed = true
+        end
+      end
+    end
+  end
+
+  if changed then
+    vim.fn.setqflist(items, "r")
+  end
+end
+
 --- Build the base env-var prefix string (e.g. "FOO=bar BAZ=qux ").
 local function build_env_str(cfg)
   local parts = {}
@@ -165,15 +189,25 @@ function M.build(opts)
   local cfg = vim.tbl_deep_extend("force", M.config, opts or {})
   M.setup_compiler(opts)
 
+  -- Capture cwd now so path resolution uses the build-time directory.
+  local cwd = vim.fn.getcwd()
+
   if has_dispatch() then
     -- :Make is vim-dispatch's async make; it reads makeprg + errorformat from
     -- the current buffer (already set above) and populates quickfix when done.
     -- vim-dispatch fires QuickFixCmdPost itself, so we skip manual copen here
     -- (use :Copen — dispatch's async-aware version — in your own mappings).
+    vim.api.nvim_create_autocmd("QuickFixCmdPost", {
+      once = true,
+      callback = function()
+        resolve_qf_paths(cwd)
+      end,
+    })
     vim.cmd("Make")
   else
     -- Synchronous fallback
     vim.cmd("make!")
+    resolve_qf_paths(cwd)
 
     if cfg.open_quickfix then
       vim.defer_fn(function()
